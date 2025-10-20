@@ -1,3 +1,4 @@
 PyAudacity
 numpy
 spleeter
+yt-dlp

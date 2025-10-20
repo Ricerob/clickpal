@@ -3,6 +3,9 @@ import os
 import subprocess
 import time
 import argparse
+import yt_dlp
+import tempfile
+import shutil
 
 # === Audacity scripting setup ===
 AUDACITY_PIPE_TO = f"/tmp/audacity_script_pipe.to.{os.getuid()}"
@@ -19,18 +22,62 @@ def get_response():
     with open(AUDACITY_PIPE_FROM, 'r') as from_aud:
         return from_aud.readline().strip()
 
+
+def download_youtube_video(url: str, output_dir: str) -> str:
+    """Download YouTube video and return the path to the downloaded file"""
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': os.path.join(output_dir, '%(title)s.%(ext)s'),
+        'extractaudio': True,
+        'audioformat': 'mp3',
+        'noplaylist': True,
+    }
+    
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(url, download=True)
+            # Get the actual filename that was downloaded
+            filename = ydl.prepare_filename(info)
+            # Convert to mp3 if needed
+            if not filename.endswith('.mp3'):
+                mp3_filename = os.path.splitext(filename)[0] + '.mp3'
+                if os.path.exists(mp3_filename):
+                    return mp3_filename
+            return filename
+        except Exception as e:
+            print(f"Error downloading video: {e}")
+            return None
+
 # === Main ===
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process and import tracks into Audacity")
     parser.add_argument("--nodrums", action="store_true", help="Skip importing drums stem")
     parser.add_argument("--export", type=str, help="Path to export final mix (overrides default)")
     parser.add_argument("--save-project", type=str, help="Path to save Audacity project (.aup3)")
+    parser.add_argument("--link", type=str, help="YouTube URL to download and process instead of local examples")
     args = parser.parse_args()
 
-    tracks = glob.glob("./examples/*.mp3")
-    if not tracks:
-        print("No MP3 files found in examples directory")
-        exit(1)
+    # Determine tracks to process
+    tracks = []
+    temp_dir = None
+    
+    if args.link:
+        # Download YouTube video
+        print(f"Downloading YouTube video from: {args.link}")
+        temp_dir = tempfile.mkdtemp()
+        downloaded_file = download_youtube_video(args.link, temp_dir)
+        if downloaded_file and os.path.exists(downloaded_file):
+            tracks = [downloaded_file]
+            print(f"Downloaded video: {downloaded_file}")
+        else:
+            print("Failed to download video")
+            exit(1)
+    else:
+        # Use local examples
+        tracks = glob.glob("./examples/*.mp3")
+        if not tracks:
+            print("No MP3 files found in examples directory")
+            exit(1)
 
     os.makedirs("output", exist_ok=True)
     os.makedirs("output/combined", exist_ok=True)
@@ -63,8 +110,15 @@ if __name__ == "__main__":
 
             print(f"Importing {stem} into Audacity...")
             send_command(f'Import2: Filename="{os.path.abspath(stem)}"')
-            time.sleep(0.2)
-            print("Audacity response:", get_response())
+            time.sleep(0.5)  # Increased wait time
+            response = get_response()
+            print("Audacity response:", response)
+            
+            # Check if import was successful
+            if "BatchCommand finished" in response or "OK" in response:
+                print(f"✅ Successfully imported {stem_name}")
+            else:
+                print(f"⚠️  Warning: Import response for {stem_name} was: {response}")
 
         print(f"All stems from {track_name} imported into Audacity ✅")
 
@@ -77,14 +131,24 @@ if __name__ == "__main__":
         print(f"Exporting mixdown to {export_path}...")
 
         # Always select all tracks first
+        print("Selecting all tracks in Audacity...")
         send_command("SelectAll:")
-        time.sleep(0.2)
-        print("Audacity response:", get_response())
+        time.sleep(0.5)
+        response = get_response()
+        print("Audacity response:", response)
 
         # Export full mix (default stereo)
+        print(f"Exporting mixdown to {export_path}...")
         send_command(f'Export2: Filename="{export_path}" NumChannels=2')
-        time.sleep(1)
-        print("Audacity response:", get_response())
+        time.sleep(2)  # Increased wait time for export
+        response = get_response()
+        print("Audacity response:", response)
+        
+        # Check if export was successful
+        if "BatchCommand finished" in response or "OK" in response:
+            print(f"✅ Successfully exported mixdown to {export_path}")
+        else:
+            print(f"⚠️  Warning: Export response was: {response}")
 
         # Save project if requested
         if args.save_project:
@@ -92,4 +156,17 @@ if __name__ == "__main__":
             print(f"Saving Audacity project to {project_path}...")
             send_command(f'SaveProject2: Filename="{project_path}"')
             time.sleep(1)
-            print("Audacity response:", get_response())
+            response = get_response()
+            print("Audacity response:", response)
+            
+            # Check if save was successful
+            if "BatchCommand finished" in response or "OK" in response:
+                print(f"✅ Successfully saved project to {project_path}")
+            else:
+                print(f"⚠️  Warning: Save response was: {response}")
+    
+    # Cleanup temporary files if we downloaded from YouTube
+    if temp_dir and os.path.exists(temp_dir):
+        print(f"Cleaning up temporary files in {temp_dir}...")
+        shutil.rmtree(temp_dir)
+        print("Cleanup completed ✅")
